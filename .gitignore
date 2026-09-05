@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.vite/
+coverage/
+coverage-json/
+coverage-verify/
+
+# 仓库卫生（T8-S3）：vite 临时产物 / 会话记忆 / 外部进程误写日志
+vite.config.ts.timestamp-*
+.workbuddy/
+debug.log

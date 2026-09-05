@@ -1,0 +1,233 @@
+{
+  "id": "stale-context",
+  "name": "过期上下文导致错误拒绝",
+  "description": "检索 Agent 取回了 91 天前创建的简历 v1（候选人 3 天前已更新至 v3），评估 Agent 基于旧简历打分 60 低于阈值 70，决策 Agent 错误拒绝。同批次的评分策略仅 2 天前更新，属于新鲜数据，用作对照。",
+  "expectedRootCause": {
+    "spanId": "s-retrieve",
+    "reason": "检索 Agent 取回的简历数据创建于 91 天前，已过期；该数据经评估 Agent 传导至决策 Agent，导致错误拒绝。"
+  },
+  "steps": [
+    {
+      "delayMs": 0,
+      "event": { "type": "run.start", "runId": "run-stale-demo", "startedAt": 0, "scenarioName": "stale-context" }
+    },
+    {
+      "delayMs": 0,
+      "event": {
+        "type": "span.start",
+        "runId": "run-stale-demo",
+        "span": {
+          "id": "s-orchestrator",
+          "runId": "run-stale-demo",
+          "parentId": null,
+          "agentId": "agent-orchestrator",
+          "kind": "agent",
+          "name": "简历初筛流程",
+          "status": "running",
+          "startedAt": 0,
+          "endedAt": null,
+          "inputEntityIds": [],
+          "outputEntityIds": [],
+          "attributes": {}
+        }
+      }
+    },
+    {
+      "delayMs": 0,
+      "event": {
+        "type": "entity.create",
+        "runId": "run-stale-demo",
+        "entity": {
+          "id": "e-query",
+          "kind": "user_input",
+          "label": "评估请求",
+          "producedBy": null,
+          "payload": { "text": "请评估候选人 A 是否应进入面试" },
+          "timeOffset": { "createdAtMs": 0 },
+          "source": "user"
+        }
+      }
+    },
+    {
+      "delayMs": 0,
+      "event": {
+        "type": "entity.create",
+        "runId": "run-stale-demo",
+        "entity": {
+          "id": "e-policy",
+          "kind": "context",
+          "label": "面试评分策略",
+          "producedBy": null,
+          "payload": { "threshold": 70, "rule": "综合评分 ≥ 70 进入面试" },
+          "timeOffset": { "createdAtMs": -172800000 },
+          "source": "policy-store"
+        }
+      }
+    },
+    {
+      "delayMs": 200,
+      "event": {
+        "type": "span.start",
+        "runId": "run-stale-demo",
+        "span": {
+          "id": "s-retrieve",
+          "runId": "run-stale-demo",
+          "parentId": "s-orchestrator",
+          "agentId": "agent-retriever",
+          "kind": "retrieval",
+          "name": "检索 Agent · 获取候选人简历",
+          "status": "running",
+          "startedAt": 200,
+          "endedAt": null,
+          "inputEntityIds": ["e-query"],
+          "outputEntityIds": [],
+          "attributes": { "index": "candidate-profile" }
+        }
+      }
+    },
+    {
+      "delayMs": 600,
+      "event": {
+        "type": "entity.create",
+        "runId": "run-stale-demo",
+        "entity": {
+          "id": "e-resume-v1",
+          "kind": "context",
+          "label": "候选人 A 简历 · v1",
+          "producedBy": "s-retrieve",
+          "payload": {
+            "candidate": "候选人 A",
+            "version": "v1",
+            "skills": ["JavaScript"],
+            "yearsOfExperience": 1,
+            "note": "当前库中存在 v3，检索未命中最新版本"
+          },
+          "timeOffset": { "createdAtMs": -7862400000 },
+          "source": "candidate-db"
+        }
+      }
+    },
+    {
+      "delayMs": 100,
+      "event": {
+        "type": "span.end",
+        "runId": "run-stale-demo",
+        "spanId": "s-retrieve",
+        "endedAt": 900,
+        "status": "ok",
+        "outputEntityIds": ["e-resume-v1"]
+      }
+    },
+    {
+      "delayMs": 150,
+      "event": {
+        "type": "span.start",
+        "runId": "run-stale-demo",
+        "span": {
+          "id": "s-score",
+          "runId": "run-stale-demo",
+          "parentId": "s-orchestrator",
+          "agentId": "agent-scorer",
+          "kind": "llm",
+          "name": "评估 Agent · 综合打分",
+          "status": "running",
+          "startedAt": 1050,
+          "endedAt": null,
+          "inputEntityIds": ["e-resume-v1"],
+          "outputEntityIds": [],
+          "attributes": { "model": "simulated" }
+        }
+      }
+    },
+    {
+      "delayMs": 900,
+      "event": {
+        "type": "entity.create",
+        "runId": "run-stale-demo",
+        "entity": {
+          "id": "e-score",
+          "kind": "llm_output",
+          "label": "综合评分 60",
+          "producedBy": "s-score",
+          "payload": { "score": 60, "breakdown": { "经验": 30, "技能匹配": 30 }, "comment": "经验偏浅，技能覆盖不足" },
+          "timeOffset": { "createdAtMs": 0 },
+          "source": "agent-scorer"
+        }
+      }
+    },
+    {
+      "delayMs": 100,
+      "event": {
+        "type": "span.end",
+        "runId": "run-stale-demo",
+        "spanId": "s-score",
+        "endedAt": 2050,
+        "status": "ok",
+        "outputEntityIds": ["e-score"]
+      }
+    },
+    {
+      "delayMs": 150,
+      "event": {
+        "type": "span.start",
+        "runId": "run-stale-demo",
+        "span": {
+          "id": "s-decide",
+          "runId": "run-stale-demo",
+          "parentId": "s-orchestrator",
+          "agentId": "agent-decider",
+          "kind": "decision",
+          "name": "决策 Agent · 是否约面试",
+          "status": "running",
+          "startedAt": 2200,
+          "endedAt": null,
+          "inputEntityIds": ["e-score", "e-policy"],
+          "outputEntityIds": [],
+          "attributes": {}
+        }
+      }
+    },
+    {
+      "delayMs": 800,
+      "event": {
+        "type": "entity.create",
+        "runId": "run-stale-demo",
+        "entity": {
+          "id": "e-decision",
+          "kind": "decision",
+          "label": "决策 · 拒绝",
+          "producedBy": "s-decide",
+          "payload": { "result": "reject", "reason": "综合评分 60 低于阈值 70" },
+          "timeOffset": { "createdAtMs": 0 },
+          "source": "agent-decider"
+        }
+      }
+    },
+    {
+      "delayMs": 100,
+      "event": {
+        "type": "span.end",
+        "runId": "run-stale-demo",
+        "spanId": "s-decide",
+        "endedAt": 3100,
+        "status": "ok",
+        "outputEntityIds": ["e-decision"]
+      }
+    },
+    {
+      "delayMs": 0,
+      "event": {
+        "type": "span.end",
+        "runId": "run-stale-demo",
+        "spanId": "s-orchestrator",
+        "endedAt": 3100,
+        "status": "ok",
+        "outputEntityIds": []
+      }
+    },
+    {
+      "delayMs": 0,
+      "event": { "type": "run.end", "runId": "run-stale-demo", "endedAt": 3100, "status": "ok" }
+    }
+  ]
+}
