@@ -23,6 +23,8 @@ import { applyEvent, createGraph } from '../core/graph/build'
 import { layoutGraph, updateLayout } from '../core/graph/layout'
 import { traceUpstream } from '../core/graph/query'
 import { buildScene } from '../store/scene'
+import { createJournal } from '../core/timeline/journal'
+import { createReplaySession, seekTo } from '../core/timeline/checkpoint'
 import { deepChainEvents, fanoutEvents, mixedTopologyEvents } from '../core/source/synth'
 import type { AgentEvent, CausalGraph, Layout, SpanId } from '../core/types'
 
@@ -146,16 +148,57 @@ function replayRound(): { updateLayout: number[]; buildScene: number[]; totalMs:
   console.log(`          M4 ${fmtRounds(roundsScene)}`)
   console.log(`          M5 中位数 ${median(totals.slice(1)).toFixed(0)}ms（完整回放：applyEvent+updateLayout+buildScene / 27717 事件）`)
   console.log(`（口径声明：A 组样本混合小图/满图两阶段，p50 被小图稀释不报；仅 p95/p99 有效）`)
+
+  // —— A 组附：journal 开启（时间旅行模式，T9 §11.9 验收「退化 ≤ 20%」）——
+  // 同口径回放一轮，applyEvent 带第三参数。直接对比上面 A 组的轮间中位数。
+  const journal = createJournal()
+  const graph = createGraph(mixedEvents[0].runId)
+  let layout: Layout = { nodes: new Map(), edges: [], bounds: { width: 0, height: 0 }, version: 0 }
+  const jUpdate: number[] = []
+  const jScene: number[] = []
+  const jTotal0 = performance.now()
+  for (const event of mixedEvents) {
+    const dirty = new Set<SpanId>()
+    if (event.type === 'span.start') {
+      dirty.add(event.span.id)
+    } else if (event.type === 'entity.create' && event.entity.producedBy !== null) {
+      dirty.add(event.entity.producedBy)
+    }
+    const t0 = performance.now()
+    applyEvent(graph, event, journal)
+    const t1 = performance.now()
+    layout = updateLayout(layout, graph, dirty)
+    const t2 = performance.now()
+    buildScene(graph, layout, null, 1)
+    const t3 = performance.now()
+    jUpdate.push(t2 - t1)
+    jScene.push(t3 - t0)
+  }
+  const jTotal = performance.now() - jTotal0
+  const baseM2 = median(roundsUpdate.map((r) => pct(r, 95)))
+  const baseM4 = median(roundsScene.map((r) => pct(r, 95)))
+  const jM2 = pct(jUpdate, 95)
+  const jM4 = pct(jScene, 95)
+  const delta = (a: number, b: number): string => `${(((a - b) / b) * 100).toFixed(1)}%`
+  console.log(`A组附（journal 开启）: M2 p95=${jM2.toFixed(3)}ms（vs 关闭 ${baseM2.toFixed(3)}ms，${delta(jM2, baseM2)}）`)
+  console.log(`                        M4 p95=${jM4.toFixed(3)}ms（vs 关闭 ${baseM4.toFixed(3)}ms，${delta(jM4, baseM4)}）`)
+  console.log(`                        M5 total=${jTotal.toFixed(0)}ms | journal 记录 ${journal.ops.length} 组`)
   console.log('')
 }
 
 // —— B 组：满图单事件口径（批量计时 + 4 轮中位数）——
 //
+// 口径（T8 审查裁决 7）：**仅 applyEvent + updateLayout，不含 buildScene**
+// （A 组 M4 才是完整链路）；样本取自图 16k 稳态（与 A 组 10k 不同规模）。
+// B 组为**趋势参考，不作验收基准**——验收以 A 组相对基线为准；其价值
+// 在于揭示 updateLayout 每事件 O(N+E) 成分随规模的增长趋势。
+//
 // 场景：10k 满图稳态下「追加一个新 span」（dirty = {新 span}，下游闭包
 // 为空——事件流尾部继续生长的稳态）。每批 B_BATCH 个事件只在批前后打
 // 两次时间戳，单事件成本 = 批耗时 / B_BATCH——计时开销被摊薄 100 倍。
-// 已知偏差：四轮共向图追加 2000 个 span（10007 → 12007），规模上涨
-// 使后几轮数字略偏保守（偏高），方向安全、不虚报性能。
+// 已知偏差：每轮追加 20 批 × 100 = 2000 个 span，四轮共 8000
+// （10007 → 18007），规模上涨使后几轮数字略偏保守（偏高），方向安全、
+// 不虚报性能。
 
 {
   const graph = createGraph(mixedEvents[0].runId)
@@ -218,11 +261,46 @@ function replayRound(): { updateLayout: number[]; buildScene: number[]; totalMs:
   console.log(
     `B组 结论（轮间中位数）: 满图单事件 p50=${median(p50s).toFixed(4)}ms  p95=${median(p95s).toFixed(4)}ms`,
   )
+  console.log(
+    `（口径：仅 applyEvent + updateLayout，不含 buildScene；图 16k 稳态；趋势参考，不作验收基准——T8 裁决 7）`,
+  )
+  console.log('')
+}
+
+// —— T9 第二部分：10k 回溯性能（§11.9：step 5000 < 200ms，多轮中位数）——
+//
+// 口径：10k 混合流（27717 事件）从终态回退到事件 5000（invert 22717 组
+// + 消费方索引失效重建 + 布局全量重建）。每轮先经 checkpoint 快路径回到
+// 终态，再计时回退；首轮预热丢弃，后 5 轮取中位数（裁决 6 形态）。
+
+{
+  const tSetup0 = performance.now()
+  const session = createReplaySession(mixedEvents)
+  console.log(
+    `T9 回溯 setup（10k 全量回放 + 检查点打点）: ${(performance.now() - tSetup0).toFixed(0)}ms（一次性成本）`,
+  )
+  const SEEK_TARGET = 5_000
+  const SEEK_ROUNDS = 6
+  const samples: number[] = []
+  for (let r = 0; r < SEEK_ROUNDS; r++) {
+    seekTo(session, mixedEvents.length) // 回终态（终点检查点重建，快路径）
+    const t0 = performance.now()
+    seekTo(session, SEEK_TARGET) // 计时目标：回退 22717 组
+    samples.push(performance.now() - t0)
+    if (r === 0) {
+      console.log(`T9 回溯 轮1（预热，丢弃）: ${samples[0]?.toFixed(1)}ms`)
+      samples.length = 0
+      continue
+    }
+    console.log(`T9 回溯 轮${r + 1}: ${samples[samples.length - 1]?.toFixed(1)}ms`)
+  }
+  console.log(
+    `T9 结论（轮间中位数）: 10k 流回溯到 step ${SEEK_TARGET} = ${median(samples).toFixed(1)}ms（验收线 < 200ms；含 invert + 索引重建 + 布局全量重建）`,
+  )
   console.log('')
 }
 
 // —— M3：链尾溯源（C 组，vitest 多迭代统计）+ 轻量指标 ——
-
 {
   // M3 也按多轮中位数采样（50 次/轮 × 4 轮），与 A/B 组方法学一致
   const rounds: number[][] = []

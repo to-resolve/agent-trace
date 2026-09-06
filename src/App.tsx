@@ -1,7 +1,10 @@
 // 三栏布局：左侧剧本列表 / 中间因果图 Canvas / 右侧检查器（docs/03 T5）。
+// T9 第五部分：底部时间轴 + 反事实实验面板（run 结束后出现）。
 import ScenarioList from './ui/ScenarioList'
 import GraphCanvas from './ui/GraphCanvas'
 import NodeInspector from './ui/NodeInspector'
+import TimelineBar from './ui/TimelineBar'
+import BranchPanel from './ui/BranchPanel'
 import { useTraceStore } from './store/traceStore'
 
 const RUN_STATE_LABEL: Record<string, string> = {
@@ -59,6 +62,8 @@ export default function App() {
         <GraphCanvas />
         <NodeInspector />
       </div>
+      <TimelineBar />
+      <BranchPanel />
     </div>
   )
 }

@@ -14,7 +14,8 @@ function formatTime(ms: number): string {
   return new Date(ms).toLocaleString('zh-CN', { hour12: false })
 }
 
-function formatAge(ageMs: number): string {
+/** 年龄展示（BranchPanel 分支对比也用，导出复用——同一展示口径） */
+export function formatAge(ageMs: number): string {
   if (ageMs < 0) return '0 分钟'
   const days = ageMs / DAY_MS
   if (days >= 1) return `${Math.floor(days)} 天`

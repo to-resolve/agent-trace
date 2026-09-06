@@ -223,6 +223,8 @@ describe('增量性（O(Δ)，禁止全量重建）', () => {
 
 describe('run.snapshot', () => {
   it('清空旧内容并按快照重放，边按统一规则推导', () => {
+    // 同一 run 的快照：snapshot 的 runId 必须与图实例一致（§11.8 条 8，
+    // 裁决 9）——本测试验证清空重放语义，runId 用同一个
     const graph = createGraph(RUN)
     // 先放一些旧内容
     applyEvent(graph, { type: 'span.start', runId: RUN, span: makeSpan('s-old', []) })
@@ -234,12 +236,12 @@ describe('run.snapshot', () => {
     const snapEntity = makeEntity('e-snap', 's-a')
     applyEvent(graph, {
       type: 'run.snapshot',
-      runId: 'run-snap',
+      runId: RUN,
       spans: [snapSpanA, snapSpanB],
       entities: [snapEntity],
     })
 
-    expect(graph.runId).toBe('run-snap')
+    expect(graph.runId).toBe(RUN)
     expect(graph.spans.size).toBe(2)
     expect(graph.entities.size).toBe(1)
     expect(graph.entities.has('e-old')).toBe(false)
@@ -248,5 +250,88 @@ describe('run.snapshot', () => {
     ])
     // 快照里的 endedAt 语义是「已结束」，重放后不再丢失
     expect(graph.spans.get('s-a')?.endedAt).toBe(10)
+  })
+
+  it('runId 冲突时抛错而非静默覆盖（§11.8 条 8，裁决 9）', () => {
+    const graph = createGraph(RUN)
+    applyEvent(graph, { type: 'span.start', runId: RUN, span: makeSpan('s-x', []) })
+    expect(() =>
+      applyEvent(graph, {
+        type: 'run.snapshot',
+        runId: 'run-another',
+        spans: [],
+        entities: [],
+      }),
+    ).toThrow(/runId.*冲突/)
+    // 图未被部分清空：抛错发生在任何写入之前
+    expect(graph.spans.size).toBe(1)
+    expect(graph.runId).toBe(RUN)
+  })
+})
+
+describe('写入语义不变量：冻结守卫（裁决 8-附，§11.8 条 6）', () => {
+  // ES module 严格模式下对 frozen object 赋值抛 TypeError——把「applyEvent
+  // 写入是替换式」从 review 口头约定变成 CI 可自动检测的性质。若将来
+  // 有人改回 mutate，这些测试立刻红且报错直指根因。
+  // 前提：图内对象先冻结，applyEvent 必须替换而非 mutate 图内既有对象。
+
+  it('span.end 替换而非 mutate 图内 span（冻结后 end 不抛）', () => {
+    const graph = createGraph(RUN)
+    applyEvent(graph, { type: 'span.start', runId: RUN, span: makeSpan('s-fz', ['e-in']) })
+    applyEvent(graph, { type: 'entity.create', runId: RUN, entity: makeEntity('e-in', null) })
+    const frozen = graph.spans.get('s-fz')
+    if (frozen === undefined) throw new Error('测试前提失败：span 未入图')
+    Object.freeze(frozen)
+    // 冻结旧对象不影响替换写入；若实现退化为 mutate，此处抛 TypeError
+    expect(() =>
+      applyEvent(graph, {
+        type: 'span.end',
+        runId: RUN,
+        spanId: 's-fz',
+        endedAt: 99,
+        status: 'ok',
+        outputEntityIds: ['e-out'],
+        error: 'boom',
+      }),
+    ).not.toThrow()
+    // 替换语义的直接证据：图内是新对象，旧对象（冻结的）内容未变
+    expect(graph.spans.get('s-fz')).not.toBe(frozen)
+    expect(graph.spans.get('s-fz')?.status).toBe('ok')
+    expect(graph.spans.get('s-fz')?.endedAt).toBe(99)
+    expect(frozen.status).toBe('running')
+  })
+
+  it('span.start 重复入图也是替换而非 mutate（同 id 二次 start 冻结后不抛）', () => {
+    const graph = createGraph(RUN)
+    applyEvent(graph, { type: 'span.start', runId: RUN, span: makeSpan('s-re', []) })
+    const frozen = graph.spans.get('s-re')
+    if (frozen === undefined) throw new Error('测试前提失败：span 未入图')
+    Object.freeze(frozen)
+    expect(() =>
+      applyEvent(graph, {
+        type: 'span.start',
+        runId: RUN,
+        span: { ...makeSpan('s-re', []), name: '重放' },
+      }),
+    ).not.toThrow()
+    expect(graph.spans.get('s-re')?.name).toBe('重放')
+    expect(frozen.name).toBe('s-re')
+  })
+
+  it('entity.create 重复入图也是替换而非 mutate（entity 侧同款守卫）', () => {
+    const graph = createGraph(RUN)
+    applyEvent(graph, { type: 'entity.create', runId: RUN, entity: makeEntity('e-re', null) })
+    const frozen = graph.entities.get('e-re')
+    if (frozen === undefined) throw new Error('测试前提失败：entity 未入图')
+    Object.freeze(frozen)
+    expect(() =>
+      applyEvent(graph, {
+        type: 'entity.create',
+        runId: RUN,
+        entity: { ...makeEntity('e-re', null), label: '新标签' },
+      }),
+    ).not.toThrow()
+    expect(graph.entities.get('e-re')?.label).toBe('新标签')
+    expect(frozen.label).toBe('e-re')
   })
 })
